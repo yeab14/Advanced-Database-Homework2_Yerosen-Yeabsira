@@ -21,7 +21,8 @@ public final class ConnectionFactory {
 
 	private static final Map<String, String> DOTENV = loadDotEnv();
 
-	private ConnectionFactory() {}
+	private ConnectionFactory() {
+	}
 
 	public static Connection getDefaultParameterConnection(String vendor) {
 		if (!POSTGRESQL.equals(vendor)) {
@@ -49,7 +50,10 @@ public final class ConnectionFactory {
 		return (v == null || v.isEmpty()) ? fallback : v;
 	}
 
-	/** Reads KEY=VALUE lines. Ignores blanks and comments. Does not override real env vars. */
+	/**
+	 * Reads KEY=VALUE lines. Ignores blanks and comments. Does not override real
+	 * env vars.
+	 */
 	private static Map<String, String> loadDotEnv() {
 		Map<String, String> map = new HashMap<String, String>();
 		Path path = Path.of(System.getProperty("user.dir", "."), ".env");
@@ -79,7 +83,7 @@ public final class ConnectionFactory {
 				map.put(key, value);
 			}
 		} catch (IOException e) {
-			System.err.println("Could not read " + path + ": " + e.getMessage());
+			Log.error("Could not read " + path + ": " + e.getMessage());
 		}
 		return map;
 	}

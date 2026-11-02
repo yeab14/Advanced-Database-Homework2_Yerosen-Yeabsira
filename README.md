@@ -81,12 +81,6 @@ Two mechanisms, used together:
 
 Every task still commits. The last line is the comparison with `RestartBlocking`: wall time, `deadlock aborts`, and `gated attempts`. At the default 30 tasks and 4 threads, plain restart usually already finishes. The gated path matters when the abort count climbs. We compare the two `[DONE]` lines under the same `-Dhw2.tasks` and `-Dhw2.queries`.
 
-## Issues worth mentioning in the talk
 
-- The template calls `ConnectionFactory`, which the template repo does not contain. Ours reads `.env`.
-- One connection per task. A shared connection across the pool does not give each task its own transaction.
-- After `40P01`, Postgres has already aborted the transaction. The client must roll back and repeat every update in the task, not only the statement that failed.
-- `getMessage()` on this JDBC version is the full server text, including `Detail` and `Where`, which is what shows the tuple lock.
-- On our PC the Windows service `postgresql-x64-18` is missing, and Postgres refuses to start as an administrator. The server runs as Network Service (scheduled task `hw2-postgres`) on port 5400.
 
 

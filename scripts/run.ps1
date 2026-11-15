@@ -21,11 +21,13 @@ Usage (from the homework2 folder):
   .\hw Blocking
   .\hw RestartBlocking
   .\hw NoLiveLocks
+  .\hw WorkloadStream
   .\hw all
 
 Optional load knobs, same for RestartBlocking and NoLiveLocks:
   .\hw RestartBlocking -Dhw2.tasks=40 -Dhw2.queries=5
   .\hw NoLiveLocks -Dhw2.tasks=40 -Dhw2.queries=5
+  .\hw WorkloadStream -Dhw3.threads=4 -Dhw3.seconds=30
 "@
 }
 
@@ -77,6 +79,10 @@ $aliases = @{
     "restartblocking"  = "RestartBlocking"
     "nolive"           = "NoLiveLocks"
     "nolivelocks"      = "NoLiveLocks"
+    "workload"         = "WorkloadStream"
+    "workloadstream"   = "WorkloadStream"
+    "hw3"              = "WorkloadStream"
+    "stream"           = "WorkloadStream"
 }
 
 if ([string]::IsNullOrWhiteSpace($Target) -or $Target -eq "help" -or $Target -eq "-h") {

@@ -3,6 +3,7 @@
 #   ./hw Blocking
 #   ./hw RestartBlocking
 #   ./hw NoLiveLocks
+#   ./hw WorkloadStream
 #   ./hw all
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"

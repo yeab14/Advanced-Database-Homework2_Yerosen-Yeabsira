@@ -32,29 +32,9 @@ The grader can change the workload without editing source:
 
 `hw2.tasks` defaults to 30. `hw2.queries` defaults to 3. `hw2.aging` defaults to 3 and is used only by `NoLiveLocks`.
 
-## Homework 3 task 1 — `WorkloadStream` (Yeabsira)
+## Homework 3
 
-Mixed stream that replaces the write-only deadlock workload. Homework 2 classes are unchanged.
-
-```text
-./hw WorkloadStream
-./hw WorkloadStream -Dhw3.threads=4 -Dhw3.seconds=30
-```
-
-`hw3.threads` defaults to 4, `hw3.seconds` to 30, `hw3.tuples` to 50000, `hw3.queries` to 3.
-
-Each transaction draws `p` in `[0, 1)` on its own:
-
-- `p < 0.6` — three single-tuple reads (`SELECT data_value FROM blocking_data WHERE data_id = ?`), then the sum is printed.
-- `0.6 <= p < 0.7` — one insert. New rows use `data_id >= 50000`.
-- `0.7 <= p < 0.8` — `SELECT sum(data_value) FROM blocking_data`, then the sum is printed.
-- `p >= 0.8` — three single-tuple updates, in the order the ids were drawn.
-
-Equilibrium: there is one transaction in flight per worker and no generator queue. A worker dices the next transaction only after the previous one commits, so admissions and commits stay matched and the in-flight count stays at the thread count. That balance is how the stream was built; it is not a rate that was tuned. The `[DONE]` lines report throughput, the observed mix (target 60/10/10/20), and the in-flight count.
-
-Restart cleanup: `main` counts rows with `data_id >= hw3.tuples`, drops `blocking_data`, and loads the base table again. Inserts from the previous process do not remain.
-
-A deadlock abort (`40P01` or `40001`) rolls back and repeats that same transaction, same statement order, until it commits. Write ids are not sorted.
+The group handoff for the mixed stream, the serial baseline, and the bottleneck work is in `README-Homework3.md`. Homework 2 classes below are unchanged. Run the new stream with `./hw WorkloadStream`.
 
 ## Task 2 — `Blocking`
 

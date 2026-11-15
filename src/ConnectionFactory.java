@@ -47,7 +47,18 @@ public final class ConnectionFactory {
 		if (v == null || v.isEmpty()) {
 			v = DOTENV.get(key);
 		}
-		return (v == null || v.isEmpty()) ? fallback : v;
+		if (v == null || v.isEmpty()) {
+			return fallback;
+		}
+		return stripEnvValue(v);
+	}
+
+	/** CRLF .env or shell export leaves \\r in values and breaks the JDBC URL. */
+	private static String stripEnvValue(String value) {
+		if (value.indexOf('\r') < 0) {
+			return value;
+		}
+		return value.replace("\r", "").trim();
 	}
 
 	/**
@@ -80,7 +91,7 @@ public final class ConnectionFactory {
 								|| (value.startsWith("'") && value.endsWith("'")))) {
 					value = value.substring(1, value.length() - 1);
 				}
-				map.put(key, value);
+				map.put(key, stripEnvValue(value));
 			}
 		} catch (IOException e) {
 			Log.error("Could not read " + path + ": " + e.getMessage());

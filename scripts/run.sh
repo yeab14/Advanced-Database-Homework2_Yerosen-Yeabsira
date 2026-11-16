@@ -4,6 +4,7 @@
 #   ./hw RestartBlocking
 #   ./hw NoLiveLocks
 #   ./hw WorkloadStream
+#   ./hw SerialWorkloadStream
 #   ./hw all
 #   ./hw RestartBlocking -Dhw2.tasks=40 -Dhw2.queries=5
 set -euo pipefail
@@ -24,12 +25,14 @@ Usage (from the homework2 folder):
   ./hw RestartBlocking
   ./hw NoLiveLocks
   ./hw WorkloadStream
+  ./hw SerialWorkloadStream
   ./hw all
 
 Optional load knobs:
   ./hw RestartBlocking -Dhw2.tasks=40 -Dhw2.queries=5
   ./hw NoLiveLocks -Dhw2.tasks=40 -Dhw2.queries=5
   ./hw WorkloadStream -Dhw3.threads=4 -Dhw3.seconds=30
+  ./hw SerialWorkloadStream -Dhw3.seconds=30
 EOF
 }
 
@@ -39,6 +42,7 @@ resolve_class() {
     restart|restartblocking) echo RestartBlocking ;;
     nolive|nolivelocks) echo NoLiveLocks ;;
     workload|workloadstream|hw3|stream) echo WorkloadStream ;;
+    serial|serialworkloadstream) echo SerialWorkloadStream ;;
     all) echo all ;;
     help|-h|"") echo help ;;
     *) echo "unknown:$1" ;;

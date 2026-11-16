@@ -1,3 +1,5 @@
 .env
 out/
 *.class
+results/throughput/*-logs/
+results/throughput/*.log

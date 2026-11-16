@@ -3,6 +3,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -10,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.Random;
 
 /**
@@ -41,7 +44,8 @@ public class WorkloadStream {
 
 	static final int num_tuple = Integer.getInteger("hw3.tuples", 50000);
 	static final int num_queries_per_task = Integer.getInteger("hw3.queries", 3);
-	static final int threads = Integer.getInteger("hw3.threads", 4);
+	static final String mode = System.getProperty("hw3.mode", "concurrent");
+	static final int threads = "serial".equals(mode) ? 1 : Integer.getInteger("hw3.threads", 4);
 	static final int seconds = Integer.getInteger("hw3.seconds", 30);
 	static final double max_value = 50.0;
 
@@ -50,6 +54,9 @@ public class WorkloadStream {
 	final AtomicBoolean accept = new AtomicBoolean(true);
 	final AtomicInteger inFlight = new AtomicInteger(0);
 	final AtomicInteger peakInFlight = new AtomicInteger(0);
+	final CountDownLatch workersReady = new CountDownLatch(threads);
+	final CountDownLatch startSignal = new CountDownLatch(1);
+	final AtomicReference<Exception> workerFailure = new AtomicReference<>();
 
 	final AtomicLong readCommits = new AtomicLong();
 	final AtomicLong insertCommits = new AtomicLong();
@@ -147,6 +154,9 @@ public class WorkloadStream {
 	}
 
 	public static void main(String[] args) throws Exception {
+		if (!"serial".equals(mode) && !"concurrent".equals(mode)) {
+			throw new IllegalArgumentException("hw3.mode must be serial or concurrent");
+		}
 		if (threads < 1) {
 			throw new IllegalArgumentException("hw3.threads must be >= 1");
 		}
@@ -161,7 +171,9 @@ public class WorkloadStream {
 		}
 
 		WorkloadStream bench = new WorkloadStream();
-		System.out.println("Homework 3 task 1 — mixed transaction stream");
+		System.out.println("Homework 3 — mixed transaction stream");
+		System.out.println("Execution: " + mode + ", workers=" + threads
+				+ ", available processors=" + Runtime.getRuntime().availableProcessors());
 		System.out.println("Mix: p<0.6 read " + num_queries_per_task
 				+ " distinct tuples and print the sum; 0.6<=p<0.7 insert one tuple; "
 				+ "0.7<=p<0.8 full-table sum; p>=0.8 " + num_queries_per_task + " single-tuple updates.");
@@ -174,30 +186,38 @@ public class WorkloadStream {
 		bench.createDB();
 
 		ExecutorService pool = Executors.newFixedThreadPool(threads);
-		long started = System.nanoTime();
-		for (int id = 0; id < threads; id++) {
-			pool.execute(bench.new Blocker(id));
-		}
-		long deadlineMs = System.currentTimeMillis() + seconds * 1000L;
+		long started;
 		try {
-			while (System.currentTimeMillis() < deadlineMs) {
-				long pause = Math.min(5000L, deadlineMs - System.currentTimeMillis());
-				if (pause > 0) {
-					Thread.sleep(pause);
-				}
-				if (System.currentTimeMillis() < deadlineMs) {
+			for (int id = 0; id < threads; id++) {
+				pool.execute(bench.new Blocker(id));
+			}
+			bench.workersReady.await();
+			if (bench.workerFailure.get() != null) {
+				throw new IllegalStateException("Worker setup failed", bench.workerFailure.get());
+			}
+			started = System.nanoTime();
+			long deadline = started + TimeUnit.SECONDS.toNanos(seconds);
+			bench.startSignal.countDown();
+			long remaining;
+			while (bench.accept.get() && (remaining = deadline - System.nanoTime()) > 0) {
+				TimeUnit.NANOSECONDS.sleep(Math.min(TimeUnit.SECONDS.toNanos(5), remaining));
+				if (bench.accept.get() && System.nanoTime() < deadline) {
 					bench.heartbeat();
 				}
 			}
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-		}
-		bench.accept.set(false);
-		pool.shutdown();
-		if (!pool.awaitTermination(1, TimeUnit.HOURS)) {
-			pool.shutdownNow();
+		} finally {
+			bench.accept.set(false);
+			bench.startSignal.countDown();
+			pool.shutdown();
+			if (!pool.awaitTermination(1, TimeUnit.HOURS)) {
+				pool.shutdownNow();
+				throw new IllegalStateException("Workers did not finish their in-flight transactions");
+			}
 		}
 		long wallNanos = System.nanoTime() - started;
+		if (bench.workerFailure.get() != null) {
+			throw new IllegalStateException("Benchmark failed", bench.workerFailure.get());
+		}
 		bench.report(wallNanos);
 	}
 
@@ -226,6 +246,10 @@ public class WorkloadStream {
 				+ ", peak in-flight=" + peakInFlight.get()
 				+ ", in-flight after the tail=" + inFlight.get()
 				+ ". Peak occupancy is the worker count: a commit is what frees a worker for the next transaction.");
+		System.out.println("CSV_HEADER,mode,threads,requested_seconds,elapsed_seconds,committed,throughput,reads,inserts,scans,writes,retries,peak_in_flight,in_flight,processors");
+		System.out.printf(Locale.ROOT, "RESULT,%s,%d,%d,%.6f,%d,%.3f,%d,%d,%d,%d,%d,%d,%d,%d%n",
+				mode, threads, seconds, wallSeconds, committed, throughput, reads, inserts, scans, writes,
+				deadlockRetries.get(), peakInFlight.get(), inFlight.get(), Runtime.getRuntime().availableProcessors());
 	}
 
 	void heartbeat() {
@@ -263,6 +287,7 @@ public class WorkloadStream {
 
 		@Override
 		public void run() {
+			boolean readyReported = false;
 			try (Connection con = ConnectionFactory.getDefaultParameterConnection(ConnectionFactory.POSTGRESQL)) {
 				con.setAutoCommit(false);
 				con.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
@@ -274,16 +299,25 @@ public class WorkloadStream {
 								"SELECT sum(data_value) FROM blocking_data");
 						PreparedStatement writePs = con.prepareStatement(
 								"UPDATE blocking_data SET data_value = ?, modified_by = ? WHERE data_id = ?")) {
+					workersReady.countDown();
+					readyReported = true;
+					startSignal.await();
 					while (accept.get()) {
 						runOne(con, readPs, insertPs, scanPs, writePs);
 					}
 				}
-			} catch (SQLException e) {
+			} catch (SQLException | RuntimeException | InterruptedException e) {
+				if (e instanceof InterruptedException) {
+					Thread.currentThread().interrupt();
+				}
+				workerFailure.compareAndSet(null, e);
+				accept.set(false);
 				Log.error("Worker " + workerId + " stopped: " + e.getMessage());
 				Log.error(e);
-			} catch (RuntimeException e) {
-				Log.error("Worker " + workerId + " stopped: " + e.getMessage());
-				Log.error(e);
+			} finally {
+				if (!readyReported) {
+					workersReady.countDown();
+				}
 			}
 		}
 

@@ -42,6 +42,11 @@ public class WorkloadStream {
 	static final double INSERT_CUTOFF = 0.7;
 	static final double SCAN_CUTOFF = 0.8;
 
+	static final boolean verbose = Boolean.getBoolean("hw3.verbose");
+
+	static final boolean printScans = Boolean.parseBoolean(
+    System.getProperty("hw3.printScans", "true"));
+
 	static final int num_tuple = Integer.getInteger("hw3.tuples", 50000);
 	static final int num_queries_per_task = Integer.getInteger("hw3.queries", 3);
 	static final String mode = System.getProperty("hw3.mode", "concurrent");
@@ -388,7 +393,9 @@ public class WorkloadStream {
 				}
 			}
 			con.commit();
-			System.out.println("read worker " + workerId + " ids=" + formatIds(ids) + " sum=" + sum);
+			if (verbose) {
+                System.out.println("read worker " + workerId + " ids=" + formatIds(ids) + " sum=" + sum);
+            }
 		}
 
 		void commitInsert(Connection con, PreparedStatement insertPs, int insertId, double insertValue)
@@ -398,7 +405,9 @@ public class WorkloadStream {
 			insertPs.setInt(3, workerId);
 			insertPs.executeUpdate();
 			con.commit();
-			System.out.println("insert worker " + workerId + " data_id=" + insertId + " data_value=" + insertValue);
+			if (verbose) {
+                System.out.println("insert worker " + workerId + " data_id=" + insertId + " data_value=" + insertValue);
+            }
 		}
 
 		void commitScan(Connection con, PreparedStatement scanPs) throws SQLException {
@@ -411,7 +420,9 @@ public class WorkloadStream {
 				}
 			}
 			con.commit();
-			System.out.println("scan worker " + workerId + " sum=" + sum);
+			if (printScans) {
+               System.out.println("scan worker " + workerId + " sum=" + sum);
+            }
 		}
 
 		/**
@@ -430,7 +441,9 @@ public class WorkloadStream {
 				}
 			}
 			con.commit();
-			System.out.println("write worker " + workerId + " ids=" + formatIds(ids));
+			if (verbose) {
+               System.out.println("write worker " + workerId + " ids=" + formatIds(ids));
+            }
 		}
 	}
 

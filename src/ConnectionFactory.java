@@ -25,6 +25,14 @@ public final class ConnectionFactory {
 	}
 
 	public static Connection getDefaultParameterConnection(String vendor) {
+		return getDefaultParameterConnection(vendor, null);
+	}
+
+	/**
+	 * Same as above, plus extra pgJDBC properties (for example sslmode). Homework 2
+	 * calls the one-argument form and is unchanged.
+	 */
+	public static Connection getDefaultParameterConnection(String vendor, Properties extra) {
 		if (!POSTGRESQL.equals(vendor)) {
 			throw new IllegalArgumentException("unsupported vendor: " + vendor);
 		}
@@ -35,6 +43,9 @@ public final class ConnectionFactory {
 		Properties props = new Properties();
 		props.setProperty("user", envOr("HW2_DB_USER", "hw2"));
 		props.setProperty("password", envOr("HW2_DB_PASSWORD", "hw2"));
+		if (extra != null) {
+			props.putAll(extra);
+		}
 		try {
 			return DriverManager.getConnection(url, props);
 		} catch (SQLException e) {

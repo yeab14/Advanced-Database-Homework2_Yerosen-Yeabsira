@@ -1,150 +1,130 @@
-# Homework 3 — handoff for the group
+# Homework 3 — Homework 2 revisited
 
 **Course:** Advanced Database · **Points:** 2 · **Deadline:** 24.11.2026 01:00 (Blackboard)
 
 **Group:** Yeabsira Dereje Alemayhu, Yerosen Hunduma Demise, Jannatul Ferdousi Sohana
 
-Homework 2 (`Blocking`, `RestartBlocking`, `NoLiveLocks`) is unchanged. Homework 3 starts from `src/WorkloadStream.java`.
+Homework 2 (`Blocking`, `RestartBlocking`, `NoLiveLocks`) is unchanged. Homework 3 lives in `src/WorkloadStream.java` and `src/SerialWorkloadStream.java`.
 
-| Part | Owner | Status |
-|---|---|---|
-| Task 1 — mixed transactions and the continuous stream | Yeabsira | Done in `WorkloadStream` |
-| Task 2 — serial baseline, throughput, thread counts, 30 s demo | Yerosen | Done in `SerialWorkloadStream` and the benchmark script below. |
-| Task 3 — bottlenecks, a faster version, slides | Jannatul | Not started. Profile `WorkloadStream`, then change a copy or the same class and say what changed. |
+## Where each requirement is met
 
-The sheet splits the points as 1.0 for the benchmark extension and 1.0 for bottlenecks. The table above is how this group divided that work.
+| Sheet item | Where |
+|---|---|
+| 1.1 mixed transactions (60/10/10/20) | `WorkloadStream.Txn`, `kindOf`, `commitRead/Insert/Scan/Write` |
+| 1.1c remove inserted tuples on restart | `createDB()` drops and reloads `blocking_data` and prints `Restart cleanup: removed N …` |
+| 1.2 continuous stream + equilibrium | Closed loop of W workers. See [Equilibrium](#equilibrium) |
+| 1.3 throughput + thread sweep | `scripts/benchmark_hw3_task2.sh` → `results/throughput/throughput.md` |
+| 1.4 30 s live demo | [Live demo](#live-demo-30-s) |
+| 2.1 serial execution + comparison | `SerialWorkloadStream` (one worker, one transaction at a time), same stream |
+| 2.2 bottleneck analysis | `docs/bottleneck-analysis.md` (JFR, EXPLAIN, per-kind latency, ablation) |
+| 2.3 bottlenecks solved | `hw3.profile=optimized` (default): TLS off on localhost, buffered output, autocommit for single-statement transactions |
+| 2.4 improved vs serial, slides | `results/throughput/throughput.md`, `docs/Advanced_Database_HW3_Group_Presentation.pptx` |
+| every transaction eventually commits | Retry + random backoff + exclusive escalation after 3 aborts. See [No starvation](#no-starvation) |
 
-## How to run Yeabsira’s part
+## Running
 
 From the project folder, with PostgreSQL up and `.env` filled in (`HW2_DB_HOST`, `HW2_DB_PORT`, `HW2_DB_NAME`, `HW2_DB_USER`, `HW2_DB_PASSWORD`):
 
-```text
-./hw WorkloadStream
-./hw WorkloadStream -Dhw3.threads=4 -Dhw3.seconds=30
+```bash
+./hw WorkloadStream                                        # 4 workers, 30 s window, optimized client
+./hw SerialWorkloadStream -Dhw3.transactions=10000         # serial baseline on the fixed stream
+./hw WorkloadStream -Dhw3.threads=8 -Dhw3.transactions=10000
+./scripts/benchmark_hw3_task2.sh                           # full benchmark, about 15 min
 ```
 
-Windows: `.\hw WorkloadStream`. The same aliases work: `hw3`, `stream`, `workload`.
-
-`./hw all` still runs only the three Homework 2 demos.
+Windows: `.\hw WorkloadStream` with the same `-D` options.
 
 | Property | Default | Meaning |
 |---|---|---|
-| `hw3.threads` | 4 | Workers. This is the concurrency knob for the thread sweep. |
-| `hw3.seconds` | 30 | How long new transactions are accepted. In-flight ones finish after that. |
-| `hw3.tuples` | 50000 | Base rows loaded at start. Do not raise this unless the load itself is the problem. |
-| `hw3.queries` | 3 | Point reads per read transaction, and updates per write transaction. |
-| `hw3.seed` | 123456 | Seed for the initial `data_value`s only. Each transaction still draws its own `p`. |
-| `hw3.mode` | concurrent | `SerialWorkloadStream` forces `serial` mode and exactly one worker. |
-
-A Windows-edited `.env` can contain `\r`. `ConnectionFactory` strips those characters so the JDBC URL stays valid.
+| `hw3.threads` | 4 | Workers, the concurrency knob for the thread sweep. `SerialWorkloadStream` forces 1. |
+| `hw3.seconds` | 30 | Time-window mode: how long new transactions are admitted. |
+| `hw3.transactions` | 0 | If > 0: run exactly the first N transactions of the stream and measure the makespan. |
+| `hw3.streamSeed` | 20261124 | Transaction *i* is generated from (seed, *i*), so every run sees the same stream. |
+| `hw3.tuples` | 50000 | Base rows, same as Homework 2. Not increased. |
+| `hw3.queries` | 3 | Point reads per read transaction and updates per write transaction. |
+| `hw3.seed` | 123456 | Seed for the initial `data_value`s. |
+| `hw3.profile` | optimized | `original` = the Task 1 client before the Task 3 optimizations. |
+| `hw3.sslmode`, `hw3.bufferedOutput`, `hw3.autocommitSingle` | from the profile | Switch one optimization individually, for the ablation. |
+| `hw3.asyncCommit` | false | `synchronous_commit=off`. Measured only, not used: it gives up durability. |
+| `hw3.verbose` | `true` for original, `false` for optimized | Also print insert and write lines. Read and scan sums are **always** printed. |
+| `hw3.escalateAfter` | 3 | Aborts before a write transaction runs exclusively. |
 
 ## What each transaction does
 
-Every transaction draws `p` uniformly from `[0, 1)` with `ThreadLocalRandom`. The draw is independent of the other workers.
+Transaction *i* draws `p` uniformly from `[0, 1)` with `SplittableRandom(streamSeed + i·φ)`. Draws are independent across transactions. Because they depend only on *i*, the serial run and every concurrent run execute exactly the same transactions (checked: identical per-kind counts and identical read ids in every run).
 
 | `p` | Kind | SQL | Console |
 |---|---|---|---|
-| `p < 0.6` | Read-only multi-point | One `SELECT data_value FROM blocking_data WHERE data_id = ?` per tuple. Three distinct `data_id`s in `[0, 50000)`. | `read worker … ids=… sum=…` |
-| `0.6 ≤ p < 0.7` | Insert | `INSERT INTO blocking_data (data_id, data_value, modified_by) VALUES (?, ?, ?)` | `insert worker … data_id=…` |
-| `0.7 ≤ p < 0.8` | Full-table scan | `SELECT sum(data_value) FROM blocking_data` | `scan worker … sum=…` |
-| `p ≥ 0.8` | Write | Three `UPDATE … SET data_value = ?, modified_by = ? WHERE data_id = ?` | `write worker … ids=…` |
+| `p < 0.6` | Read-only multi-point | 3 × `SELECT data_value FROM blocking_data WHERE data_id = ?`, distinct ids, then COMMIT | `read worker … ids=… sum=…` (always) |
+| `0.6 ≤ p < 0.7` | Insert | `INSERT INTO blocking_data (data_id, data_value, modified_by) VALUES (?, ?, ?)`, `data_id = 50000 + i` | `insert worker …` (verbose) |
+| `0.7 ≤ p < 0.8` | Full-table scan | `SELECT sum(data_value) FROM blocking_data` | `scan worker … sum=…` (always) |
+| `p ≥ 0.8` | Write | 3 × `UPDATE … SET data_value = ?, modified_by = ? WHERE data_id = ?`, each must touch exactly 1 row, then COMMIT | `write worker …` (verbose) |
 
-Reads and writes sample only the base ids `[0, hw3.tuples)`. Inserts use `data_id` starting at `hw3.tuples` (50000, 50001, …). Isolation is **READ COMMITTED**. Autocommit is off. Each worker keeps one connection and reuses its prepared statements.
-
-Write ids stay in the order they were drawn. Do not sort them. The assignment forbids changing write order to force a canonical lock order.
-
-A deadlock (`40P01`) or serialization failure (`40001`) rolls the transaction back and repeats the same statements, same ids, same values, until that transaction commits. Other SQL errors are printed in red and fail the benchmark with a nonzero exit status, so a failed worker cannot silently produce a successful measurement.
+Isolation is READ COMMITTED. Write ids keep the order in which they were drawn; they are never sorted (the sheet forbids canonical lock ordering).
 
 ## Equilibrium
 
-There is no generator thread and no queue of waiting transactions. `hw3.threads` workers are started. Each worker runs one transaction, commits it, then dices a new `p` and runs the next one. A new transaction is admitted only because the previous one on that worker committed.
+The stream is a closed loop. There is no generator thread and no queue. W workers each run one transaction, wait for its commit, then take the next transaction *i* from a shared counter. A new transaction is admitted only because one just committed, so:
 
-So while the window is open:
+- in-flight transactions stay at W (the run prints `peak in-flight = W` and `in-flight after the tail = 0`), and
+- arrivals equal commits at every moment, give or take the W in flight.
 
-- in-flight transactions stay at the worker count
-- transactions started and transactions committed stay matched (plus at most one unfinished transaction per worker at the end)
+We found the equilibrium by construction rather than by tuning an arrival rate. An open system, where a generator produces transactions at rate λ, is stable only if λ is below the capacity; otherwise the queue grows without bound. A closed loop always runs at capacity. By Little's law its throughput is W / (mean latency), and we verified that relation against the measured per-kind latencies. The `[stream]` line every 5 s shows `in-flight=W/W`.
 
-That match is how the stream was built. It is not a rate that was tuned with sleeps. The `[stream]` line, printed about every 5 seconds, shows `in-flight` against the worker count. The last lines show peak in-flight and the commit mix.
+## No starvation
 
-## Restart cleanup
+Reads and scans are MVCC snapshots and never wait for locks. Inserts use fresh keys. Only writes take conflicting row locks, so only writes can deadlock. A deadlock victim (`40P01` / `40001`):
 
-Every start of `WorkloadStream` counts rows with `data_id >= hw3.tuples`, drops `blocking_data`, and loads the 50000 base rows again. Inserts from the previous process are gone. The first line of a run says how many were removed, for example:
+1. rolls back and sleeps a random 1–40 ms, so the losers do not restart in lockstep;
+2. retries the **same** statements with the same ids, values and order;
+3. after 3 aborts, takes a fair `ReentrantReadWriteLock` in exclusive mode. Every other write transaction holds it in shared mode, so the escalated transaction runs while no other write is active, cannot be part of a deadlock cycle, and commits.
 
-```text
-Restart cleanup: removed 6459 inserted tuple(s) from the previous run (data_id >= 50000), then reloaded 50000 base rows.
-```
+So every transaction commits after at most 3 aborts. Stress test with 8 workers on only 6 rows (`-Dhw3.tuples=6 -Dhw3.transactions=2000`; fewer rows, used only to provoke deadlocks): all 2,000 committed, 386 deadlock retries, 65 escalations, **max 3 aborts for any transaction**. With the real 50,000 rows we measured 0 deadlocks in all 80 benchmark runs. Any other SQL error stops the benchmark with a nonzero exit status.
 
-The timer starts once all workers have opened their connections and prepared their statements. Loading the table and setting up workers are outside the measured time.
+## Results (this machine: 8 CPUs, PostgreSQL 18.6, OpenJDK 25)
 
-## What the end of a run means
+Full table and ranges: [results/throughput/throughput.md](results/throughput/throughput.md). Fixed stream of 10,000 transactions, 5 repetitions, median, after one discarded warm-up run.
 
-A 30-second run with 4 threads on this machine (PostgreSQL 18, port 5432, client and server on the same host):
+| | Workers | txn/s | vs serial (original) |
+|---|---:|---:|---:|
+| Serial, original client | 1 | 1,327 | 1.00× |
+| Concurrent, original | 4 | 2,769 | 2.09× |
+| Concurrent, original | 8 | 3,207 | 2.42× |
+| Serial, optimized | 1 | 1,523 | 1.15× |
+| Concurrent, optimized | 4 | 3,189 | 2.40× |
+| Concurrent, optimized | 8 | 3,858 | 2.91× |
+| Concurrent, optimized | 16 | 4,034 | 3.04× |
 
-```text
-[DONE] committed 64244 transactions in 30.014 s (requested window 30 s, plus the in-flight tail).
-[DONE] throughput 2140.45 txn/s | read=38208 insert=6459 scan=6511 write=13066 | deadlock retries=0
-[DONE] observed mix read=59.5% insert=10.1% scan=10.1% write=20.3% (target 60/10/10/20).
-[DONE] equilibrium check: workers=4, peak in-flight=4, in-flight after the tail=0.
-```
+Scaling is sublinear: doubling workers gives +57%, +32% and +16% for the original client. Client and server share 8 cores, and half of the busy time is the CPU-bound full-table scan. Bottlenecks and the "unexpected results" (CPU frequency scaling made cold serial runs about 3× slower) are explained in [docs/bottleneck-analysis.md](docs/bottleneck-analysis.md).
 
-`30.014 s` is the requested 30 seconds plus the last in-flight transactions. Throughput is commits divided by that wall time. The mix will sit near 60 / 10 / 10 / 20. A few tenths of a percent either way is the dice, not a bug. `deadlock retries=0` is a valid run. Single-tuple writes on 50000 rows rarely deadlock. Retries still happen if Postgres aborts one, and those transactions are still counted once, when they commit.
+The results from the earlier Task 2 run on another machine (4 CPUs, PostgreSQL 16) are kept as `results/throughput/throughput-task2-old-machine.*`. They used a 10 s window and no fixed stream, so they are not compared with the numbers above.
 
-The output above is from Yeabsira's Task 1 run. Task 2 results are listed below.
-
-## Yerosen — serial baseline, threads, demo
-
-`SerialWorkloadStream` runs Yeabsira's `Blocker` with one worker and one connection. Each transaction commits before the next starts. Transaction generation, SQL, and retries use the existing methods.
-
-Run from the project folder with the same database settings as Task 1:
+## Live demo (30 s)
 
 ```bash
-./hw SerialWorkloadStream -Dhw3.seconds=30
 ./hw WorkloadStream -Dhw3.threads=4 -Dhw3.seconds=30
 ```
 
-Windows uses `.\hw SerialWorkloadStream` and `.\hw WorkloadStream` with the same Java options. `./hw all` still runs only Homework 2.
+Show:
 
-The measured time includes transaction generation, SQL execution, retries, console output, and finishing current transactions. A worker failure stops the benchmark with a nonzero exit status.
+1. the `Restart cleanup: removed N inserted tuple(s)` line;
+2. read and scan lines with their sums;
+3. the `[stream] in-flight=4/4 committed=…` line every 5 s;
+4. the final `[DONE]` block: throughput, mix ≈ 60/10/10/20, 0 retries, latency per kind (scan ≈ 50% of busy time), and `peak in-flight=4, in-flight after the tail=0`.
 
-The final `RESULT` line records the worker count, elapsed time, commits, transaction mix, and retries. Throughput is commits divided by elapsed seconds. The final in-flight count must be zero. The serial run's peak must not exceed one.
-
-To collect the serial baseline and compare worker counts:
-
-```bash
-./scripts/benchmark_hw3_task2.sh
-```
-
-The script runs three repetitions of serial execution and concurrent execution at 1, 2, 4, and 8 workers. Each run admits work for 10 seconds, using 50,000 base rows, three queries per point-read/write transaction, and initial-data seed 123456. Complete transaction output is saved in `results/throughput/throughput-logs/`; measurements are saved in [results/throughput/throughput.csv](results/throughput/throughput.csv).
-
-Results are in [results/throughput/throughput.md](results/throughput/throughput.md). Update the table after rerunning the benchmark. Each run draws new transactions with `ThreadLocalRandom`; the seed controls only the initial data.
-
-For linear scaling, doubling workers would approximately double throughput. The CSV records the available processor count separately from the worker count. Compare the one-worker concurrent run with the serial run as well.
-
-For the live demo, use the 30-second concurrent command above. Show the **Restart cleanup** line, transaction output, the `[stream]` progress lines, and the final `[DONE]` summary. At 30 seconds, new work stops and current transactions finish. Compilation and setup add to the complete command’s wall time.
-
-## Jannatul — bottlenecks and the talk
-
-Profile the running stream, not the `CREATE TABLE` / bulk insert in `createDB`. The assignment says connection setup and the initial load are out of scope. Time spent building any batches of non-conflicting transactions counts as run time.
-
-Places that showed up while writing Task 1, and that are allowed to change if you can explain them:
-
-- Every read, insert, scan, and write prints a line. That console lock is part of the specified output for Task 1. A throughput run can still be dominated by printing. If you reduce logging, say so on the slides and keep one setting that still prints the sums the sheet asks for.
-- Full-table scans read all 50000 rows (and any inserts committed so far) under READ COMMITTED.
-- Each worker holds one JDBC connection for the whole window. Do not open a new connection per transaction unless you are measuring that on purpose.
-- Write ids are not sorted. Leave that alone unless the slide explains it as a deliberate experiment. The sheet says not to reorder writes to provoke canonical locking.
-
-Postgres logging and `EXPLAIN` on the four statements are in scope. The table definition and the four queries should stay the same. Client and server should stay on one machine.
-
-Slides need the idea of the stream, the problems you actually hit, the serial-versus-concurrent numbers, and the contribution split. The division we are using is about 33% each: Yeabsira (this stream), Yerosen (serial baseline, thread sweep, demo), Jannatul (bottlenecks, improvements, slides).
+For contrast, run `./hw SerialWorkloadStream -Dhw3.seconds=30`.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `src/WorkloadStream.java` | Task 1. Class `WorkloadStream`, inner class `Blocker`. |
-| `src/SerialWorkloadStream.java` | Yerosen's Task 2 serial entry point; reuses `WorkloadStream` with exactly one worker. |
-| `scripts/benchmark_hw3_task2.sh` | Repeated serial/concurrent worker sweep with complete per-run logs. |
-| `src/ConnectionFactory.java` | JDBC connection from the environment, then `.env`. Strips `\r`. |
-| `scripts/run.sh`, `scripts/run.ps1`, `hw` | `./hw WorkloadStream` |
-| `README.md` | Homework 2 notes for the instructor. |
-| `README-Homework3.md` | This file. |
+| `src/WorkloadStream.java` | Tasks 1 and 3: stream, kinds, starvation-free retry, optimizations, reporting |
+| `src/SerialWorkloadStream.java` | Task 2: serial execution (one worker) on the same stream |
+| `src/ConnectionFactory.java` | JDBC connection from env / `.env`, with optional extra driver properties |
+| `scripts/benchmark_hw3_task2.sh` | Serial + 1/2/4/8/16 workers × original/optimized + ablation, with a warm-up |
+| `scripts/summarize_hw3.py` | CSV → `results/throughput/throughput.md` |
+| `docs/bottleneck-analysis.md` | Task 2.2 evidence and the unexpected results |
+
+## Contributions
+
+About 33% each: Yeabsira (Task 1 stream), Yerosen (serial baseline, thread sweep, demo), Jannatul (bottleneck analysis, optimization, slides).
